@@ -110,18 +110,22 @@ uint32_t scope_setup_exc(void)
 }
 
 #define CAPTURE_DEPTH 64
-#define BUFFERS 8
-static unsigned char buffer[BUFFERS*CAPTURE_DEPTH];
+#define BUFFERS 32
+static unsigned char buffer[2*BUFFERS*CAPTURE_DEPTH];
 static int offset =0;
 static uint dma_chan;
 static unsigned char data_ready;
 static unsigned char stop_capture;
+static int int_count=0;
 
 static void
 dma_handler(void)
 {
+	int last_offset = offset;
+
+	int_count++;
 	dma_hw->ints0 = 1u << dma_chan;
-	data_ready = 1;
+	data_ready++;
 	if (stop_capture) {
 		if (stop_capture == 1) {
 			stop_capture = 0;
@@ -129,65 +133,130 @@ dma_handler(void)
 		}
 		stop_capture--;
 	}
-	offset += CAPTURE_DEPTH;
-	if (offset >= CAPTURE_DEPTH*BUFFERS)
+	offset += 2*CAPTURE_DEPTH;
+	if (offset >= (2*CAPTURE_DEPTH*BUFFERS))
 		offset = 0;
 	dma_channel_set_write_addr(dma_chan, &buffer[offset], true);
+	if (!stop_capture) {
+		if (search_rising) {
+			unsigned short *tp = (unsigned short *)&buffer[last_offset];
+			for (int i = 0; i < CAPTURE_DEPTH; i++) {
+				v = *tp++;
+				if (last_value <= trigger_level && v > trigger_level) {
+					stop_capture = BUFFERS-1;
+					trigger_offset = i;
+					break;
+				}
+				last_value = v;
+			}
+		} else 
+		if (search_falling) {
+			unsigned short *tp = (unsigned short *)&buffer[last_offset];
+			for (int i = 0; i < CAPTURE_DEPTH; i++) {
+				v = *tp++;
+				if (last_value >= trigger_level && v < trigger_level) {
+					stop_capture = BUFFERS-1;
+					trigger_offset = i;
+					break;
+				}
+				last_value = v;
+		} else 
+		if (search_either) {
+			unsigned short *tp = (unsigned short *)&buffer[last_offset];
+			for (int i = 0; i < CAPTURE_DEPTH; i++) {
+				v = *tp++;
+				if (last_value >= trigger_level ? v < trigger_level: v > trigger_level) {
+					stop_capture = BUFFERS-1;
+					trigger_offset = i;
+					break;
+				}
+				last_value = v;
+			}
+		}
+	}
+}
+
+static void
+scope_stop(void)
+{
+	irq_set_enabled(DMA_IRQ_0, false);
+	dma_channel_set_irq0_enabled(dma_chan, false);
+	adc_run(false);
+	dma_channel_abort(dma_chan);
+    adc_fifo_drain();
+	dma_channel_acknowledge_irq0(dma_chan);
+	dma_hw->ints0 = 1u << dma_chan;
+	dma_channel_cleanup(dma_chan);
+	dma_channel_unclaim (dma_chan);
 }
 
 static void
 scope_start(int pin)
 {
+printf("1\n\r");
 	adc_init();
-	adc_gpio_init(AMUX_OUT);
+printf("2\n\r");
 	adc_gpio_init(CURRENT_SENSE);
+	adc_gpio_init(AMUX_OUT);
 	adc_select_input(AMUX_OUT_ADC);
 	hw_adc_channel_select(pin);
+printf("6\n\r");
 
 	adc_fifo_setup(
         true,    // Write each completed conversion to the sample FIFO
         true,    // Enable DMA data request (DREQ)
         1,       // DREQ (and IRQ) asserted when at least 1 sample present
         false,   // We won't see the ERR bit because of 8 bit reads; disable.
-        true     // Shift each sample to 8 bits when pushing to FIFO
+        false     // Shift each sample to 8 bits when pushing to FIFO
     );
 	adc_set_clkdiv(0);
+printf("8\n\r");
 	dma_chan = dma_claim_unused_channel(true);
 	dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
-	channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
+	channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
 	channel_config_set_read_increment(&cfg, false);
 	channel_config_set_write_increment(&cfg, true);
 	channel_config_set_dreq(&cfg, DREQ_ADC);
-	dma_channel_configure(dma_chan, &cfg,
-        NULL,    // dst
-        &adc_hw->fifo,  // src
-        CAPTURE_DEPTH,  // transfer count
-        false           // don't start yet
-    );
+printf("9\n\r");
 	dma_channel_set_irq0_enabled(dma_chan, true);
 	irq_set_exclusive_handler(DMA_IRQ_0, dma_handler);
 	irq_set_enabled(DMA_IRQ_0, true);
-
 	dma_hw->ints0 = 1u << dma_chan;
+printf("15\n\r");
 	offset = 0;
 	data_ready = 0;
 	stop_capture = 0;
-	dma_channel_set_write_addr(dma_chan, &buffer[0], true);	// start it
+	dma_channel_configure(dma_chan, &cfg,
+         &buffer[0],    // dst
+        &adc_hw->fifo,  // src
+        CAPTURE_DEPTH,  // transfer count
+        true           // start 
+    );
+printf("18\n\r");
 	
-	printf("starting\r\n");
+	printf("starting %d\r\n", int_count);
+memset(buffer, 0, sizeof(buffer));
+	busy_wait_ms(1);
 	adc_run(true);
-	while (!data_ready)
-		;
-	printf("stopped\r\n");
+
+//dma_channel_wait_for_finish_blocking(dma_chan);
+//printf("blocking done\r\n");
+	for (int i = 0; i < 10000; i++) {
+		if (data_ready) break;
+		busy_wait_ms(1);
+	}
 	stop_capture = 1;
+	printf("stopping %d\r\n", data_ready);
+	for (int i = 0; i < 10000; i++) {
+		if (!stop_capture) break;
+		busy_wait_ms(1);
+	}
+	printf("stopped %d %d\r\n", stop_capture, int_count);
+for (int i = 0; i < 10; i++) printf("%02x ", buffer[i]);printf("\r\n");
+
+	scope_stop();
 }
 
-static void
-scope_stop(void)
-{
-	adc_run(false);
-    adc_fifo_drain();
-}
 
 uint32_t
 scope_commands(struct opt_args *args, struct command_result *result)
@@ -234,6 +303,7 @@ scope_commands(struct opt_args *args, struct command_result *result)
 		// 1 o - once
 		// n - normal
 		// a - auto
+scope_start(2);
 	} else 
 	if (strcmp(args[0].c, "ss") == 0)  {
 		// stop the engine - button if started
