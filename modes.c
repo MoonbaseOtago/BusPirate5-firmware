@@ -506,6 +506,7 @@ struct _mode modes[MAXPROTO]={
     scope_help,				// display small help about the protocol
     "Scope",				// friendly name (promptname)
 	scope_commands,			// scope specific commands
+	scope_lcd_update,		// scope screen write
 },
 #endif
 #ifdef BP_USE_DUMMY1
