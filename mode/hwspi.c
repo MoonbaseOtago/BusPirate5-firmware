@@ -147,6 +147,7 @@ uint32_t spi_setup_exc(void)
 	bio_buf_output(M_SPI_CDO); //tx
 	bio_buf_input(M_SPI_CDI); //rx
 
+	gpio_put(bio2bufiopin[M_SPI_CDO], 1);
 	//assign spi functon to io pins
 	bio_set_function(M_SPI_CLK, GPIO_FUNC_SPI); //sck
 	bio_set_function(M_SPI_CDO, GPIO_FUNC_SPI); //tx
@@ -304,7 +305,7 @@ void spi_read(struct _bytecode *result, struct _bytecode *next)
 
 	while(!spi_is_writable(M_SPI_PORT));
 	
-	spi_get_hw(M_SPI_PORT)->dr = (uint32_t)result->out_data;
+	spi_get_hw(M_SPI_PORT)->dr = 0xff; //(uint32_t)result->out_data;
 
     while(!spi_is_readable(M_SPI_PORT));
 	

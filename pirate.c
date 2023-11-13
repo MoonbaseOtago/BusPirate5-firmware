@@ -40,6 +40,8 @@
 #include "mode/binio.h"
 
 lock_core_t core;
+spin_lock_t *spi_spin_lock;
+uint spi_spin_lock_num;
 
 void core1_entry(void);
 
@@ -91,12 +93,13 @@ int main()
     // ADC pin init
     amux_init();
 
-    // SD card CS pin init
+    // TF flash card CS pin init
     storage_init();
 
     // SPI bus is used from here
     // setup the spinlock for spi arbitration
-    lock_init(&core, next_striped_spin_lock_num());
+    spi_spin_lock_num=spin_lock_claim_unused(true);
+    spi_spin_lock=spin_lock_init(spi_spin_lock_num);
 
     // configure the defaults for shift register attached hardware
     shift_set_clear_wait( (AMUX_S3|AMUX_S1|DISPLAY_RESET|DAC_CS|CURRENT_EN), CURRENT_EN_OVERRIDE);
@@ -113,7 +116,6 @@ int main()
     busy_wait_ms(100);
     shift_set_clear_wait(DISPLAY_RESET,0);
     busy_wait_ms(100);
-
    
     // input buttons init
     buttons_init();
@@ -127,9 +129,8 @@ int main()
     monitor_init();
 
     // Now continue after init of all the pins and shift registers
-
-    // Mount the SD card file system (and put into SPI mode)
-    // This must be done before any other SPI communicatons
+    // Mount the TF flash card file system (and put into SPI mode)
+    // This must be done before any other SPI communications
     storage_mount();
 
     if(storage_load_config())
@@ -173,16 +174,17 @@ int main()
 
     translation_set(system_config.terminal_language); 
     
-    multicore_fifo_push_blocking(0); //begin main loop on secondary core
-    
     //modes[0].protocol_setup_exc();	
     // turn everything off
 	bio_init();     // make all pins safe
 	psu_reset();    // disable psu and reset pin label
     psu_cleanup();  // clear any errors
 
-
-
+    // begin main loop on secondary core
+    // this will also setup the USB device
+    // we need to have read any config files on the TF flash card before now
+    multicore_fifo_push_blocking(0); 
+    
     busy_wait_ms(100);
 
     enum bp_statmachine
@@ -237,7 +239,6 @@ int main()
                             system_config.terminal_ansi_statusbar=1;
                             ui_term_detect(); // Do we detect a VT100 ANSI terminal? what is the size?
                             ui_term_init(); // Initialize VT100 if ANSI terminal
-                            monitor(system_config.psu);
                             ui_statusbar_update(UI_UPDATE_ALL);
                             break;
                         case 'n':
@@ -360,14 +361,14 @@ void core1_entry(void)
     // input buttons init
     //buttons_init();
 
+    // wait for main core to signal start
+    while(multicore_fifo_pop_blocking()!=0);
+
     // USB init
     if(system_config.terminal_usb_enable)
     {
         tusb_init();
     }
-
-    // wait for main core to signal start
-    while(multicore_fifo_pop_blocking()!=0);
 
     lcd_irq_enable(BP_LCD_REFRESH_RATE_MS);
 
@@ -495,15 +496,16 @@ void spi_busy_wait(bool enable)
     }
 
     do{
-        uint32_t save = spin_lock_blocking(core.spin_lock);
+        uint32_t save = spin_lock_blocking(spi_spin_lock);
         if(busy)
         {
-            lock_internal_spin_unlock_with_wait(&core, save);
+            spin_unlock(spi_spin_lock, save);
+            //printf("Spinlock busy\r\n");
         }
         else
         {
             busy=true;
-            lock_internal_spin_unlock_with_notify(&core, save);
+            spin_unlock(spi_spin_lock, save);
             return;
         }
 
