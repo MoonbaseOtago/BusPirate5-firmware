@@ -45,21 +45,33 @@ static uint16_t last_value, trigger_level=1<<10;
 static uint32_t trigger_offset;		// offset from start of dsplay in points
 static uint32_t trigger_point;		// index of trigger point
 static unsigned char search_rising, search_falling, search_either, first_sample;
-static uint32_t timebase = 500000; // fastest possible
 static uint32_t h_res = 100;	// 100uS
 static uint8_t scope_pin = 2;
+static uint8_t display = 0;
+static uint8_t running = 0;
 static unsigned char fb[240*320];
 typedef enum { SMODE_ONCE, SMODE_NORMAL, SMODE_AUTO } SCOPE_MODE;
 SCOPE_MODE scope_mode=SMODE_NORMAL;
 typedef enum { TRIGGER_POS, TRIGGER_NEG, TRIGGER_NONE, TRIGGER_BOTH } TRIGGER_TYPE;
 TRIGGER_TYPE trigger_type = TRIGGER_BOTH;
+static uint16_t dy=100;		// Y size in 10mV units
+static uint16_t yoffset=0;  // y offset in dy units
 
+static uint32_t timebase = 500000; // fastest possible
+static uint16_t zoom=1;		// pixels/sample at the current timebase
+static uint16_t samples=1;	// samples/pixel at the current timebase
+static uint16_t xoffset=0;  // x offset in dy units
+
+// b0   RRRr rGGG
+// b1   gggB BBbb
 unsigned short clr[] = 
 {
 	0x0000,	// black
 	0xffff,	// white
 	0x07ff, // yellow
 	0x187f, // blue
+	0x2086, // light green
+	0x14a5, // gray
 };
 
 typedef enum {
@@ -67,8 +79,12 @@ BL=0,
 WH=1,
 Y=2,
 B=3,
+LG=4,
+GY=5,
 } CLR;
 
+static void scope_start(int pin);
+static void scope_stop(void);
 
 
 
@@ -129,6 +145,7 @@ scope_help(void)
 
 void scope_cleanup(void)
 {
+	ui_lcd_update(UI_UPDATE_ALL);
 }
 
 uint32_t scope_periodic(void)
@@ -143,12 +160,18 @@ uint32_t scope_periodic(void)
 		if (down) {
 			down = 0;
 			//printf("up\r\n");
+			if (!running) {
+				scope_start(scope_pin);
+			} else {
+				scope_stop();
+			}
 		}
 	}
 }
 
 uint32_t scope_setup(void)
 {
+	display = 1;
 	return 1;
 }
 
@@ -183,6 +206,8 @@ dma_handler(void)
 	if (stop_capture) {
 		if (stop_capture == 1) {
 			stop_capture = 0;
+			display = 1;
+			running = 0;
 			return;
 		}
 		stop_capture--;
@@ -203,6 +228,7 @@ dma_handler(void)
 				if (last_value <= trigger_level && v > trigger_level) {
 					trigger_point = i;
 					stop_capture = BUFFERS-1-(trigger_offset+CAPTURE_DEPTH-1)/CAPTURE_DEPTH;
+					running = 0;
 					break;
 				}
 				last_value = v;
@@ -215,6 +241,7 @@ dma_handler(void)
 				if (last_value >= trigger_level && v < trigger_level) {
 					trigger_point = i;
 					stop_capture = BUFFERS-1-(trigger_offset+CAPTURE_DEPTH-1)/CAPTURE_DEPTH;
+					running = 0;
 					break;
 				}
 				last_value = v;
@@ -227,6 +254,7 @@ dma_handler(void)
 				if (last_value >= trigger_level ? v < trigger_level: v > trigger_level) {
 					trigger_point = i;
 					stop_capture = BUFFERS-1-(trigger_offset+CAPTURE_DEPTH-1)/CAPTURE_DEPTH;
+					running = 0;
 					break;
 				}
 				last_value = v;
@@ -247,6 +275,7 @@ scope_stop(void)
 	dma_hw->ints0 = 1u << dma_chan;
 	dma_channel_cleanup(dma_chan);
 	dma_channel_unclaim (dma_chan);
+	display = 1;
 }
 
 static void
@@ -270,7 +299,17 @@ scope_start(int pin)
         false,   // We won't see the ERR bit because of 8 bit reads; disable.
         false     // Shift each sample to 8 bits when pushing to FIFO
     );
-	adc_set_clkdiv(0);
+	switch (timebase) {
+	case 500000: samples = 1; adc_set_clkdiv(0); break;	
+	case 250000: samples = 2; adc_set_clkdiv(0); break;
+	case 100000: samples = 5; adc_set_clkdiv(0); break;
+	case  10000: 
+	case   1000: 
+	case    100: 
+	case     10: samples = 5; adc_set_clkdiv((9600000/5)/timebase - 1); break;
+	default:	 samples = 4; adc_set_clkdiv((9600000/4)/timebase - 1); break;
+	}
+	//adc_set_clkdiv(0);
 	dma_chan = dma_claim_unused_channel(true);
 	dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 	channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
@@ -291,8 +330,9 @@ scope_start(int pin)
         true           // start 
     );
 	
-	printf("starting %d\r\n", int_count);
-memset(buffer, 0, sizeof(buffer));
+	memset(buffer, 0, sizeof(buffer));
+	display = 1;
+	running = 1;
 	busy_wait_ms(1);
 	adc_run(true);
 
@@ -370,13 +410,19 @@ trigger_right(void)
 static void
 scope_up(void)
 {
-	printf("up\r\n");
+	if ((yoffset+5)*dy < 500) {
+		yoffset++;
+		display = 1;
+	}
 }
 
 static void
 scope_down(void)
 {
-	printf("down\r\n");
+	if (yoffset > 0) {
+		yoffset--;
+		display = 1;
+	}
 }
 
 static void
@@ -431,25 +477,24 @@ scope_commands(struct opt_args *args, struct command_result *result)
 		// < move trigger towards start
 		// > move trigger towards end
 		// p [0-1024] - trigger position
+		printf("Trigger: a 0-7 +-nb ^v<> x> ");
 		while ((c = next_char()) != 0) {
 			switch (c) {
 			case 0x1b:
 				c = next_char();
 				if (c != '[')
-					goto bade;
+					break;
 				c = next_char();
 				switch (c) {
 				case 'A': trigger_up();	break;
 				case 'B': trigger_down();	break;
 				case 'C': trigger_right();break;
 				case 'D': trigger_left();	break;
-				default:
-bade:
-					printf("bad escape sequence\r\n");
-					return 0;
 				}
 				break;
+			case '=';
 			case '+':	trigger_type = TRIGGER_POS; break;
+			case '_';
 			case '-':	trigger_type = TRIGGER_NEG; break;
 			case 'n':	trigger_type = TRIGGER_NONE; break;
 			case 'b':	trigger_type = TRIGGER_BOTH; break;
@@ -458,47 +503,100 @@ bade:
 			case '^':	trigger_up(); break;
 			case '<':	trigger_left(); break;
 			case '>':	trigger_right(); break;
-			default:	
-				printf("unknown command\r\n");
-				return 0;
 			}
 		}
+		return 1;
 	} else
 	if (strcmp(args[0].c, "sx") == 0)  {
+		int z;
 		// x - timebase
 		// < move left
 		// > move right
 		// + faster
 		// - slower
+		printf("Timebase: +- ^v<> x> ");
 		while ((c = next_char()) != 0) {
 			switch (c) {
 			case 0x1b:
 				c = next_char();
 				if (c != '[')
-					goto bade;
+					break;
 				c = next_char();
 				switch (c) {
 				case 'A': scope_up();	break;
 				case 'B': scope_down();	break;
 				case 'C': scope_right();break;
 				case 'D': scope_left();	break;
-				default:
-					printf("bad escape sequence\r\n");
-					return 0;
 				}
 				break;
-			case '+':	;
-			case '-':	;
+			case '=':
+			case '+':
+				if (timebase == 500000)
+					break;
+				switch (timebase) {
+				case 250000: timebase = 500000; z = 1; break;	// 1 sample
+				case 100000: timebase = 250000; z = 0; break;	// 2 samples
+				case  50000: timebase = 100000; z = 1; break;	// 5 samples
+				case  25000: timebase = 50000; z = 1; break;	
+				case  10000: timebase = 25000; z = 0; break;
+				case   5000: timebase = 10000; z = 1; break;
+				case   2500: timebase = 5000; z = 1; break;
+				case   1000: timebase = 2500; z = 0; break;
+				case    500: timebase = 1000; z = 1; break;
+				case    250: timebase = 500; z = 1; break;
+				case    100: timebase = 250; z = 0; break;
+				case     50: timebase = 100; z = 1; break;
+				case     25: timebase = 50; z = 1; break;
+				case     10: timebase = 25; z = 0; break;
+				}
+#ifdef notdef
+				if (z) {
+					if (zoom == 1) {
+						repeat *= 2;
+					} else {
+						zoom /= 2;
+					}
+				} else {
+					if (zoom == 1) {
+						repeat *= 5;
+						repeat /= 2;
+					} else {
+						zoom /= 2;
+					}
+				}
+#endif
+				display = 1;
+				break;
+			case '_';
+			case '-':
+				if (timebase == 10)
+					break;
+				switch (timebase) {
+				case 500000: timebase = 250000; z = 1; break;
+				case 250000: timebase = 100000; z = 0; break;
+				case 100000: timebase = 50000; z = 1; break;
+				case  50000: timebase = 25000; z = 1; break;
+				case  25000: timebase = 10000; z = 0; break;
+				case  10000: timebase = 5000; z = 1; break;
+				case   5000: timebase = 2500; z = 1; break;
+				case   2500: timebase = 1000; z = 0; break;
+				case   1000: timebase = 500; z = 1; break;
+				case    500: timebase = 250; z = 1; break;
+				case    250: timebase = 100; z = 0; break;
+				case    100: timebase = 50; z = 1; break;
+				case     50: timebase = 25; z = 1; break;
+				case     25: timebase = 10; z = 0; break;
+				}
+				display = 1;
+				break;
 			case 'v':
 			case 'V':	scope_down(); break;
 			case '^':	scope_up(); break;
 			case '<':	scope_left(); break;
 			case '>':	scope_right(); break;
-			default:	
-				printf("unknown command\r\n");
-				return 0;
 			}
 		}
+		return 1;
 	} else
 	if (strcmp(args[0].c, "sy") == 0)  {
 		// y - y scale
@@ -506,35 +604,57 @@ bade:
 		// - decrease scale
 		// ^ move up
 		// v move down
+		printf("Voltage scale: +- ^v<> x> ");
 		while ((c = next_char()) != 0) {
 			switch (c) {
 			case 0x1b:
 				c = next_char();
 				if (c != '[')
-					goto bade;
+					break;
 				c = next_char();
 				switch (c) {
 				case 'A': scope_up();	break;
 				case 'B': scope_down();	break;
 				case 'C': scope_right();break;
 				case 'D': scope_left();	break;
-				default:
-					printf("bad escape sequence\r\n");
-					return 0;
 				}
 				break;
-			case '+':	;
-			case '-':	;
+			case '=':
+			case '+':	if (dy > 5) {
+							switch (dy) {
+							case 100: dy = 50; break;
+							case 50: dy = 20; break;
+							case 20: dy = 10; break;
+							case 10: dy = 5; break;
+							}
+							if ((yoffset+5)*dy >= 500) {
+								yoffset = 500/dy-5;
+							}  
+							display = 1;
+						}
+						break;
+			case '_':
+			case '-':	if (dy < 100) {
+							switch (dy) {
+							case 50: dy = 100; break;
+							case 20: dy = 50; break;
+							case 10: dy = 20; break;
+							case 5: dy = 10; break;
+							}
+							if ((yoffset+5)*dy >= 500) {
+								yoffset = 500/dy-5;
+							}  
+							display = 1;
+						}
+						break;
 			case 'v':
 			case 'V':	scope_down(); break;
 			case '^':	scope_up(); break;
 			case '<':	scope_left(); break;
 			case '>':	scope_right(); break;
-			default:	
-				printf("unknown command\r\n");
-				return 0;
 			}
 		}
+		return 1;
 	} else
 	if (strcmp(args[0].c, "sr") == 0)  {
 		// start 
@@ -543,24 +663,41 @@ bade:
 		// o - once
 		// n - normal
 		// a - auto
-		for (int i = 0; i < 5;  i++) {
-			opt_args r;
-			if (!ui_parse_get_string(&r))
+		for (;;) {
+			char c;
+			if (!cmdln_try_peek(0, &c))
 				break;
-			for (char *cp=&r.c[0]; *cp; cp++)
-			if (*cp >= '0' && *cp < '7') {
-				scope_pin = *cp-'0';
-			} else
-			if (*cp == 'o' || *cp == 'O') {
+			cmdln_try_discard(1);
+			if (c == 0)
+				break;
+			switch (c) {
+			case '0':
+			case '1':
+			case '2':
+			case '3':
+			case '4':
+			case '5':
+			case '6':
+			case '7':
+				scope_pin = c-'0';
+printf("pin=%d\r\n", scope_pin);
+				break;
+			case 'o':
+			case 'O':
 				scope_mode = SMODE_ONCE;
-			} else 
-			if (*cp == 'n' || *cp == 'N') {
+				break;
+			case 'n':
+			case 'N':
 				scope_mode = SMODE_NORMAL;
-			} else 
-			if (*cp == 'a' || *cp == 'A') {
+				break;
+			case 'a':
+			case 'A':
 				scope_mode = SMODE_AUTO;
-			} else  {
-				printf("in valid start mode '%s'\r\n", r.c);
+				break;
+			case ' ':
+				break;
+			default:
+				printf("invalid start mode '%c'\r\n", c);
 				return 0;
 			}
 		}
@@ -645,17 +782,32 @@ draw_trace(CLR c)
 	unsigned char *p = &fb[0];
 	uint16_t *b = &buffer[0];
 	const uint32_t V5 = 0x0c05; // 5V
-	uint32_t v[320];
+	int16_t v[320];
+	// dy is the number of 10 mv per 
+	// yoffset is the offest from 0 in dy units
+	int df = yoffset*(240/5);
 	for (int x = 0; x < 320; x++) {
 		uint32_t y = *b++;
 		
-		v[x] = y*240/V5;
+		int d = (y*240*100/V5/dy)-df;
+//if (x<2) printf("y=%d dy=%d yoffset=%d df=%d d=%d\r\n", (int)y, (int)dy, (int)yoffset, df, d);
+		if (d < 0) {
+			v[x] = -1;
+		} else {
+			if (d >=240) {
+				v[x] = 240;
+			} else {
+				v[x] = d;
+			}
+		}
 	}
-	unsigned y1 = v[0];
-	unsigned y2 = (v[1]+v[0])>>1;
-	if (y1 < 240 || y2 < 240) {
-		if (y1 >= 240) y1 = 239;
+	int y1 = v[0];
+	int y2 = (v[1]+v[0])/2;
+	if ((y1 >= 0 && y1 < 240) || (y2 >= 0 && y2 < 240)) {
+		if (y1 >= 240) y1 = 239; 
 		if (y2 >= 240) y2 = 239;
+		if (y1 < 0) y1 = 0;
+		if (y2 < 0) y2 = 0;
 		if (y1 > y2) {
 			int t = y1;
 			y1 = y2;
@@ -665,29 +817,41 @@ draw_trace(CLR c)
 			p[320*y+0] = c;
 	}
 	for (int x=1; x < 319; x++) {
-		unsigned y1 = (v[x-1]+v[x])>>1;
-		unsigned y2 = (v[x+1]+v[x])>>1;
-		if (y1 >= 240) {
-			if (y2 >= 240)
+		y1 = (v[x-1]+v[x]);
+		y2 = (v[x+1]+v[x]);
+		if (y1 >= (2*240)) {
+			if (y2 >= (2*240))
 				continue;
-			y1 = 239;
+			y1 = 2*239;
 		} else
-		if (y2 >= 240) {
-			y2 = 239;
-		}
+		if (y2 >= (2*240)) {
+			y2 = 2*239;
+		} 
+
+		if (y1 < 0) {
+			if (y2 < 0)
+				continue;
+			y1 = 0;
+		} else
+		if (y2 < 0) {
+			y2 = 0;
+		} 
+
 		if (y1 > y2) {
 			int t = y1;
 			y1 = y2;
 			y2 = t;
 		}
-		for (int y = y1; y <= y2; y++)
-			p[320*y+x] = c;
+		for (int y = y1&~1; y <= y2; y+=2)
+			p[(320/2)*y+x] = c;
 	}
 	y1 = v[319];
-	y2 = (v[318]+v[319])>>1;
-	if (y1 < 240 || y2 < 240) {
+	y2 = (v[318]+v[319])/2;
+	if ((y1 >= 0 && y1 < 240) || (y2 >= 0 &&y2 < 240)) {
 		if (y1 >= 240) y1 = 239;
 		if (y2 >= 240) y2 = 239;
+		if (y1 < 0) y1 = 0;
+		if (y2 < 0) y2 = 0;
 		if (y1 > y2) {
 			int t = y1;
 			y1 = y2;
@@ -698,13 +862,123 @@ draw_trace(CLR c)
 	}
 }
 
+static int
+xnum(char *cp, int v)
+{
+	if (v == 0) return 0;
+	int i = xnum(cp, v/10);
+	cp += i;
+	v = v%10;
+	*cp = v+'0';
+	return i+1;
+}
 
 static void 
 draw_scope()
 {
+	char b[40];
+	char *s1, *s2;	
+	int unit;
 	draw_grid(Y);
-	draw_text(10, 20, &hunter_12ptFontInfo, WH, "Test");
-	draw_trace(B);
+	
+	switch (dy) {
+	case 100: s1="1Vx";    break;
+	case 50:  s1="0.5Vx";  break;
+	case 20:  s1="0.2Vx";  break;
+	case 10:  s1="0.1Vx";  break;
+	case 5:   s1="0.05Vx"; break;
+	}	
+	switch (timebase) {
+	case 500000: s2 = "100uS"; unit = 1; break;
+	case 250000: s2 = "200uS"; unit = 2; break;
+	case 100000: s2 = "500uS"; unit = 5; break;
+	case  50000: s2 = "1mS"; unit = 10; break;
+	case  25000: s2 = "2mS"; unit = 20; break;
+	case  10000: s2 = "5mS"; unit = 50; break;
+	case   5000: s2 = "10mS"; unit = 100; break;
+	case   2500: s2 = "20mS"; unit = 200; break;
+	case   1000: s2 = "50mS"; unit = 500; break;
+	case    500: s2 = "100mS"; unit = 1000; break;
+	case    250: s2 = "200mS"; unit = 2000; break;
+	case    100: s2 = "500mS"; unit = 5000; break;
+	case     50: s2 = "1S"; unit = 10000; break;
+	case     25: s2 = "2S"; unit = 20000; break;
+	case     10: s2 = "5S"; unit = 50000; break;
+	}
+	strcpy(b, s1);	
+	strcat(b, s2);
+	draw_text(308-(strlen(b)*12), 235, &hunter_12ptFontInfo, GY, &b[0]);
+	int v = dy*yoffset;
+	b[0] = v/100+'0';
+	int off = 1;
+	v = v%100;
+	if (v) {
+		b[off++] = '.';
+		b[off++] = v/10+'0';
+		v = v%10;
+		if (v)
+			b[off++] = v+'0';
+	}
+	b[off++] = 'V';
+	b[off] = 0;
+	draw_text(5, 15, &hunter_12ptFontInfo, GY, &b[0]);
+	unit = unit*xoffset;
+	if (unit >= 10000) {
+		int v = unit/10000;
+		unsigned char *cp = &b[0];
+		unit = unit % 10000;
+		cp += xnum(cp, v);
+		if (unit) {
+			*cp++ = '.';
+			*cp++ = unit/1000+'0';
+			unit = unit%1000;
+			if (unit)
+				*cp++ = unit/100+'0';
+		}
+		*cp++ = 'S';
+		*cp = 0;
+	} else
+	if (unit >= 10) {
+		int v = unit/10;
+		unsigned char *cp = &b[0];
+		unit = unit % 10;
+		cp += xnum(cp, v);
+		if (unit) {
+			*cp++ = '.';
+			*cp++ = unit+'0';
+		}
+		*cp++ = 'm';
+		*cp++ = 'S';
+		*cp = 0;
+	} else 
+	if (unit != 0) {
+		unsigned char *cp = &b[0];
+		*cp++ = unit+'0';
+		*cp++ = '0';
+		*cp++ = '0';
+		*cp++ = 'u';
+		*cp++ = 'S';
+		*cp = 0;
+	} else { // 0;
+		unsigned char *cp = &b[0];
+		*cp++ = '0';
+		if (timebase >= 100000) {
+			*cp++ = 'u';
+		} else
+		if (timebase >= 100) {
+			*cp++ = 'm';
+		} 
+		*cp++ = 'S';
+		*cp = 0;
+	}
+	draw_text(5, 235, &hunter_12ptFontInfo, GY, &b[0]);
+	strcpy(b, "Pin");
+	b[3] = '0'+scope_pin;
+	b[4] = 0;
+	draw_text(308-(strlen(b)*12), 15, &hunter_12ptFontInfo, GY, &b[0]);
+	if (!running) {
+		draw_trace(B);
+	}
 }
 
 static
@@ -731,12 +1005,13 @@ void scope_write()
 void
 scope_lcd_update(uint32_t flags)
 {
-static int i;
+	if (!display)
+		return;
+	display = 0;
 	draw_scope();
-spi_set_baudrate(BP_SPI_PORT, 1000*1000*72);
+	spi_set_baudrate(BP_SPI_PORT, 62500*1000);
 	scope_write();
-spi_set_baudrate(BP_SPI_PORT, 1000*1000*32);
-i++;
+	spi_set_baudrate(BP_SPI_PORT, 32000*1000);
 }
 
 /* For Emacs:
