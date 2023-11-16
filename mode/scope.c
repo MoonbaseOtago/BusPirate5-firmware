@@ -33,23 +33,26 @@ extern const FONT_INFO hunter_12ptFontInfo;
 
 extern uint lcd_cs, lcd_dp;
 
+#define VS 240
+#define HS 320
+
 #define CAPTURE_DEPTH 64
-#define BUFFERS 32
+#define BUFFERS 100
 static uint16_t buffer[BUFFERS*CAPTURE_DEPTH];
 static int offset =0;
 static uint dma_chan;
 static unsigned char data_ready;
-static unsigned char stop_capture;
+static unsigned short stop_capture;
 static int int_count=0;
 static uint16_t last_value, trigger_level=1<<10;
 static uint32_t trigger_offset;		// offset from start of dsplay in points
 static uint32_t trigger_point;		// index of trigger point
 static unsigned char search_rising, search_falling, search_either, first_sample;
 static uint32_t h_res = 100;	// 100uS
-static uint8_t scope_pin = 2;
+static uint8_t scope_pin = 0;
 static uint8_t display = 0;
 static uint8_t running = 0;
-static unsigned char fb[240*320];
+static unsigned char fb[VS*HS];
 typedef enum { SMODE_ONCE, SMODE_NORMAL, SMODE_AUTO } SCOPE_MODE;
 SCOPE_MODE scope_mode=SMODE_NORMAL;
 typedef enum { TRIGGER_POS, TRIGGER_NEG, TRIGGER_NONE, TRIGGER_BOTH } TRIGGER_TYPE;
@@ -110,7 +113,7 @@ void scope_macro(uint32_t macro) {}
 void
 scope_help(void)
 {
-		printf("st - trigger\r\n");
+		printf("t - trigger\r\n");
 		printf("	a analog pin is the trigger pin\r\n");
 		printf("	0-7 which digital pin is the trigger pin\r\n");
 		printf("	v [0-9].[0-9] voltage level\r\n");
@@ -120,13 +123,13 @@ scope_help(void)
 		printf("	< move trigger towards start\r\n");
 		printf("	> move trigger towards end\r\n");
 		printf("\r\n");
-		printf("sx - timebase\r\n");
+		printf("x - timebase\r\n");
 		printf("	< move left\r\n");
 		printf("	> move right\r\n");
 		printf("	^ faster\r\n");
 		printf("	v slower\r\n");
 		printf("\r\n");
-		printf("sy - y scale\r\n");
+		printf("y - y scale\r\n");
 		printf("	+ increase scale\r\n");
 		printf("	- decrease scale\r\n");
 		printf("	^ move up\r\n");
@@ -300,15 +303,16 @@ scope_start(int pin)
         false     // Shift each sample to 8 bits when pushing to FIFO
     );
 	switch (timebase) {
-	case 500000: samples = 1; adc_set_clkdiv(0); break;	
-	case 250000: samples = 2; adc_set_clkdiv(0); break;
-	case 100000: samples = 5; adc_set_clkdiv(0); break;
+	case 500000: samples = 1; printf("clk=0\r\n"); adc_set_clkdiv(0); break;	
+	case 250000: samples = 2; printf("clk=0\r\n"); adc_set_clkdiv(0); break;
+	case 100000: samples = 5; printf("clk=0\r\n"); adc_set_clkdiv(0); break;
 	case  10000: 
 	case   1000: 
 	case    100: 
-	case     10: samples = 5; adc_set_clkdiv((9600000/5)/timebase - 1); break;
-	default:	 samples = 4; adc_set_clkdiv((9600000/4)/timebase - 1); break;
+	case     10: samples = 5; printf("clk=%d\r\n", (5*9600000/5)/timebase - 1); adc_set_clkdiv((5*9600000/5)/timebase - 1); break;
+	default:	 samples = 4; printf("clk=%d\r\n", (5*9600000/4)/timebase - 1); adc_set_clkdiv((5*9600000/4)/timebase - 1); break;
 	}
+	zoom = 1;
 	//adc_set_clkdiv(0);
 	dma_chan = dma_claim_unused_channel(true);
 	dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
@@ -342,14 +346,14 @@ scope_start(int pin)
 		if (data_ready) break;
 		busy_wait_ms(1);
 	}
-	stop_capture = 1;
+	stop_capture = BUFFERS-5;
 	printf("stopping %d\r\n", data_ready);
 	for (int i = 0; i < 10000; i++) {
 		if (!stop_capture) break;
 		busy_wait_ms(1);
 	}
 	printf("stopped %d %d\r\n", stop_capture, int_count);
-for (int i = 0; i < 10; i++) printf("%04x ", buffer[i]);printf("\r\n");
+for (int i = 0; i < 40; i++) printf("%04x ", buffer[i]);printf("\r\n");
 
 	scope_stop();
 }
@@ -448,9 +452,9 @@ scope_commands(struct opt_args *args, struct command_result *result)
 //
 //	commands:
 //
-//	sx - scope X  up/down (scale) left right
-//	sy - scope y
-//  st - scope trigger +-nb up down left right ports- num 
+//	x - scope X  timebase
+//	y - scope y  voltage scaling
+//  t - scope trigger +-nb up down left right ports- num 
 //  sr - run [pin]
 //  ss - stop 
 //	
@@ -467,7 +471,7 @@ scope_commands(struct opt_args *args, struct command_result *result)
 		break;
 	}
 	
-	if (strcmp(args[0].c, "st") == 0)  {
+	if (strcmp(args[0].c, "t") == 0)  {
 		// trigger
 		// a 0-7 which is the trigger pin
 		// v [0-9].[0-9] voltage level
@@ -492,9 +496,9 @@ scope_commands(struct opt_args *args, struct command_result *result)
 				case 'D': trigger_left();	break;
 				}
 				break;
-			case '=';
+			case '=':
 			case '+':	trigger_type = TRIGGER_POS; break;
-			case '_';
+			case '_':
 			case '-':	trigger_type = TRIGGER_NEG; break;
 			case 'n':	trigger_type = TRIGGER_NONE; break;
 			case 'b':	trigger_type = TRIGGER_BOTH; break;
@@ -507,7 +511,7 @@ scope_commands(struct opt_args *args, struct command_result *result)
 		}
 		return 1;
 	} else
-	if (strcmp(args[0].c, "sx") == 0)  {
+	if (strcmp(args[0].c, "x") == 0)  {
 		int z;
 		// x - timebase
 		// < move left
@@ -535,39 +539,39 @@ scope_commands(struct opt_args *args, struct command_result *result)
 					break;
 				switch (timebase) {
 				case 250000: timebase = 500000; z = 1; break;	// 1 sample
-				case 100000: timebase = 250000; z = 0; break;	// 2 samples
-				case  50000: timebase = 100000; z = 1; break;	// 5 samples
+				case 100000: timebase = 250000; z = 1; break;	// 2 samples
+				case  50000: timebase = 100000; z = 0; break;	// 5 samples
 				case  25000: timebase = 50000; z = 1; break;	
-				case  10000: timebase = 25000; z = 0; break;
-				case   5000: timebase = 10000; z = 1; break;
+				case  10000: timebase = 25000; z = 1; break;
+				case   5000: timebase = 10000; z = 0; break;
 				case   2500: timebase = 5000; z = 1; break;
-				case   1000: timebase = 2500; z = 0; break;
-				case    500: timebase = 1000; z = 1; break;
+				case   1000: timebase = 2500; z = 1; break;
+				case    500: timebase = 1000; z = 0; break;
 				case    250: timebase = 500; z = 1; break;
-				case    100: timebase = 250; z = 0; break;
-				case     50: timebase = 100; z = 1; break;
+				case    100: timebase = 250; z = 1; break;
+				case     50: timebase = 100; z = 0; break;
 				case     25: timebase = 50; z = 1; break;
-				case     10: timebase = 25; z = 0; break;
+				case     10: timebase = 25; z = 1; break;
 				}
-#ifdef notdef
+printf("+ %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				if (z) {
-					if (zoom == 1) {
-						repeat *= 2;
+					if (samples != 1) {
+						samples /= 2;
 					} else {
-						zoom /= 2;
+						zoom *= 2;
 					}
 				} else {
-					if (zoom == 1) {
-						repeat *= 5;
-						repeat /= 2;
+					if (samples != 1) {
+						samples *= 2;
+						samples /= 5;
 					} else {
+						zoom *= 5;
 						zoom /= 2;
 					}
 				}
-#endif
 				display = 1;
 				break;
-			case '_';
+			case '_':
 			case '-':
 				if (timebase == 10)
 					break;
@@ -587,6 +591,22 @@ scope_commands(struct opt_args *args, struct command_result *result)
 				case     50: timebase = 25; z = 1; break;
 				case     25: timebase = 10; z = 0; break;
 				}
+printf("- %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
+				if (z) {
+					if (zoom == 1) {
+						samples *= 2;
+					} else {
+						zoom /= 2;
+					}
+				} else {
+					if (zoom == 1) {
+						samples *= 5;
+						samples /= 2;
+					} else {
+						zoom *= 2;
+						zoom /= 5;
+					}
+				}
 				display = 1;
 				break;
 			case 'v':
@@ -598,7 +618,7 @@ scope_commands(struct opt_args *args, struct command_result *result)
 		}
 		return 1;
 	} else
-	if (strcmp(args[0].c, "sy") == 0)  {
+	if (strcmp(args[0].c, "y") == 0)  {
 		// y - y scale
 		// + increase scale
 		// - decrease scale
@@ -622,10 +642,10 @@ scope_commands(struct opt_args *args, struct command_result *result)
 			case '=':
 			case '+':	if (dy > 5) {
 							switch (dy) {
-							case 100: dy = 50; break;
-							case 50: dy = 20; break;
-							case 20: dy = 10; break;
-							case 10: dy = 5; break;
+							case 100: dy = 50; yoffset = 2*yoffset; break;
+							case 50: dy = 20; yoffset = 5*yoffset/2; break;
+							case 20: dy = 10; yoffset = 2*yoffset; break;
+							case 10: dy = 5; yoffset = 2*yoffset; break;
 							}
 							if ((yoffset+5)*dy >= 500) {
 								yoffset = 500/dy-5;
@@ -636,10 +656,10 @@ scope_commands(struct opt_args *args, struct command_result *result)
 			case '_':
 			case '-':	if (dy < 100) {
 							switch (dy) {
-							case 50: dy = 100; break;
-							case 20: dy = 50; break;
-							case 10: dy = 20; break;
-							case 5: dy = 10; break;
+							case 50: dy = 100; yoffset /= 2; break;
+							case 20: dy = 50; yoffset = yoffset*2/5; break;
+							case 10: dy = 20; yoffset = yoffset/2; break;
+							case 5: dy = 10; yoffset = yoffset/2; break;
 							}
 							if ((yoffset+5)*dy >= 500) {
 								yoffset = 500/dy-5;
@@ -680,7 +700,6 @@ scope_commands(struct opt_args *args, struct command_result *result)
 			case '6':
 			case '7':
 				scope_pin = c-'0';
-printf("pin=%d\r\n", scope_pin);
 				break;
 			case 'o':
 			case 'O':
@@ -720,17 +739,17 @@ scope_fb_init()
 static void
 draw_h_line(int x1, int x2, int y1, CLR c)
 {
-	unsigned char *p = &fb[y1*320+x1];
+	unsigned char *p = &fb[y1*HS+x1];
 	for (int i = x1; i <= x2; i++)
 		*p++ = c;
 }
 static void
 draw_v_line(int x1, int y1, int y2, CLR c)
 {
-	unsigned char *p = &fb[y1*320+x1];
+	unsigned char *p = &fb[y1*HS+x1];
 	for (int i = y1; i <= y2; i++) {
 		*p = c;
-		p += 320;
+		p += HS;
 	}
 }
 
@@ -739,32 +758,32 @@ draw_grid(CLR c)
 {
 	scope_fb_init();
 	for (int i = 0; i < 5 ; i++) 
-		draw_h_line(0, 319, i*(240/5), c);
-	draw_h_line(0, 319, 239, c);
+		draw_h_line(0, HS-1, i*(VS/5), c);
+	draw_h_line(0, HS-1, VS-1, c);
 	for (int i = 0; i < 7 ; i++) 
-		draw_v_line(i*50, 0, 239, c);
-	//draw_v_line(319, 0, 239, c);
+		draw_v_line(i*50, 0, VS-1, c);
+	//draw_v_line(HS-1, 0, VS-1, c);
 }
 
 static void 
 draw_text(int x, int y, const FONT_INFO *font, CLR c, char *cp) // stolen from lcd_write_string
 {
 	unsigned char *b = &fb[x];
-	int y320 = 320*y;
+	int yHS = HS*y;
 	while (*cp) {
 		uint8_t adjusted_c = (*cp)-(*font).start_char;
 		for (uint16_t col=0; col < (*font).lookup[adjusted_c].width; col++) {
 			uint16_t row=0;
 			uint16_t rows = (*font).lookup[adjusted_c].height;
 			uint16_t offset=(*font).lookup[adjusted_c].offset;
-			int off = y320;
+			int off = yHS;
 			for (uint16_t page=0; page<(*font).height_bytes; page++) {
 				uint8_t bitmap_char = (*font).bitmaps[offset+(col*(*font).height_bytes)+page];
 				for (uint8_t i=0; i<8; i++) {
 					if (off >= 0 && bitmap_char&(0x80>>i)) {
 						b[off] = c;
 					} 
-					off -= 320;
+					off -= HS;
 					row++;
 					if(row==rows)
 						break;
@@ -782,30 +801,48 @@ draw_trace(CLR c)
 	unsigned char *p = &fb[0];
 	uint16_t *b = &buffer[0];
 	const uint32_t V5 = 0x0c05; // 5V
-	int16_t v[320];
+	int16_t v1[HS];
+	int16_t v2[HS];
 	// dy is the number of 10 mv per 
 	// yoffset is the offest from 0 in dy units
-	int df = yoffset*(240/5);
-	for (int x = 0; x < 320; x++) {
-		uint32_t y = *b++;
+	int df = yoffset*(VS/5);
+printf("samples=%d zoom=%d\r\n", samples, zoom);
+	for (int x = 0; x < HS; ) {
+		for (int i=0; i < samples; i++) {
+			uint32_t y = *b++;
 		
-		int d = (y*240*100/V5/dy)-df;
+			int d = (y*VS*100/V5/dy)-df;
 //if (x<2) printf("y=%d dy=%d yoffset=%d df=%d d=%d\r\n", (int)y, (int)dy, (int)yoffset, df, d);
-		if (d < 0) {
-			v[x] = -1;
-		} else {
-			if (d >=240) {
-				v[x] = 240;
+			if (d < 0) {
+				d = -1;
 			} else {
-				v[x] = d;
+				if (d >=VS) {
+					d = VS;
+				}
+			}
+			if (i == 0) {
+				v1[x] = d;
+				v2[x] = d;
+			} else {
+				if (d < v1[x])
+					v1[x] = d;
+				if (d > v2[x])
+					v2[x] = d;
 			}
 		}
+		x += zoom;
 	}
-	int y1 = v[0];
-	int y2 = (v[1]+v[0])/2;
-	if ((y1 >= 0 && y1 < 240) || (y2 >= 0 && y2 < 240)) {
-		if (y1 >= 240) y1 = 239; 
-		if (y2 >= 240) y2 = 239;
+	int y1 = v1[0];
+	int y2 = v2[0];
+	if (v1[1] > y2) {
+		y2 = (y2+v1[1])/2;
+	} else 
+	if (v2[1] < y1) {
+		y1 = (y1+v2[1])/2;
+	}
+	if ((y1 >= 0 && y1 < VS) || (y2 >= 0 && y2 < VS)) {
+		if (y1 >= VS) y1 = VS-1; 
+		if (y2 >= VS) y2 = VS-1;
 		if (y1 < 0) y1 = 0;
 		if (y2 < 0) y2 = 0;
 		if (y1 > y2) {
@@ -814,18 +851,47 @@ draw_trace(CLR c)
 			y2 = t;
 		}
 		for (int y = y1; y <= y2; y++)
-			p[320*y+0] = c;
+			p[HS*y+0] = c;
 	}
-	for (int x=1; x < 319; x++) {
-		y1 = (v[x-1]+v[x]);
-		y2 = (v[x+1]+v[x]);
-		if (y1 >= (2*240)) {
-			if (y2 >= (2*240))
-				continue;
-			y1 = 2*239;
+	for (int x=1; x < (HS-1); x++) {
+		y1 = v1[x];
+		y2 = v2[x];
+
+		if (v1[x+1] > y2) {
+			if (v1[x-1] > v1[x+1]) {
+				y2 = (y2+v1[x-1]);
+			} else {
+				y2 = (y2+v1[x+1]);
+			}
 		} else
-		if (y2 >= (2*240)) {
-			y2 = 2*239;
+		if (v1[x-1] > y2) {
+			y2 = (y2+v1[x-1]);
+		} else {
+			y2 = y2<<1;
+		}
+
+		if (v2[x+1] < y1) {
+			if (v2[x-1] < v2[x+1]) {
+				y1 = (y1+v2[x-1]);
+			} else {
+				y1 = (y1+v2[x+1]);
+			}
+		} else
+		if (v2[x-1] < y1) {
+			y1 = (y1+v2[x-1]);
+		} else {
+			y1 = y1<<1;
+		} 
+
+		//y1 = (v[x-1]+v[x]);
+		//y2 = (v[x+1]+v[x]);
+		if (y1 >= (2*VS)) {
+			if (y2 >= (2*VS))
+				continue;
+			y1 = 2*(VS-1);
+		} else
+		if (y2 >= (2*VS)) {
+			y2 = 2*(VS-1);
 		} 
 
 		if (y1 < 0) {
@@ -837,19 +903,25 @@ draw_trace(CLR c)
 			y2 = 0;
 		} 
 
-		if (y1 > y2) {
-			int t = y1;
-			y1 = y2;
-			y2 = t;
-		}
+		//if (y1 > y2) {
+		//	int t = y1;
+		//	y1 = y2;
+		//	y2 = t;
+		//}
 		for (int y = y1&~1; y <= y2; y+=2)
-			p[(320/2)*y+x] = c;
+			p[(HS/2)*y+x] = c;
 	}
-	y1 = v[319];
-	y2 = (v[318]+v[319])/2;
-	if ((y1 >= 0 && y1 < 240) || (y2 >= 0 &&y2 < 240)) {
-		if (y1 >= 240) y1 = 239;
-		if (y2 >= 240) y2 = 239;
+	y1 = v1[HS-1];
+	y2 = v2[HS-1];
+	if (v1[HS-2] > y2) {
+		y2 = (y2+v1[HS-2])/2;
+	} 
+	if (v2[HS-2] < y1) {
+		y1 = (y1+v2[HS-2])/2;
+	}
+	if ((y1 >= 0 && y1 < VS) || (y2 >= 0 &&y2 < VS)) {
+		if (y1 >= VS) y1 = VS-1;
+		if (y2 >= VS) y2 = VS-1;
 		if (y1 < 0) y1 = 0;
 		if (y2 < 0) y2 = 0;
 		if (y1 > y2) {
@@ -858,7 +930,7 @@ draw_trace(CLR c)
 			y2 = t;
 		}
 		for (int y = y1; y <= y2; y++)
-			p[320*y+319] = c;
+			p[HS*y+HS-1] = c;
 	}
 }
 
@@ -986,13 +1058,13 @@ void scope_write()
 {       
     uint16_t x,y;
 
-    lcd_set_bounding_box(0, 240, 0, 320);
+    lcd_set_bounding_box(0, VS, 0, HS);
     
     spi_busy_wait(true);
     gpio_put(lcd_dp, 1);
     gpio_put(lcd_cs, 0);    
     
-    for(uint32_t b=0; b<(320*240); b+=1){
+    for(uint32_t b=0; b<(HS*VS); b+=1){
         spi_write_blocking(BP_SPI_PORT, (unsigned char *)&clr[fb[b]], 2);
     }
     
