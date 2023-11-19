@@ -37,7 +37,7 @@ extern uint lcd_cs, lcd_dp;
 #define HS 320
 
 #define CAPTURE_DEPTH 64
-#define BUFFERS 100
+#define BUFFERS (5*10*2+1)	// 320x10 = standard samples rate (10 samples/pixel) 2x screen width
 static uint16_t buffer[BUFFERS*CAPTURE_DEPTH];
 static int offset =0;
 static uint dma_chan;
@@ -306,11 +306,12 @@ scope_start(int pin)
 	case 500000: samples = 1; printf("clk=0\r\n"); adc_set_clkdiv(0); break;	
 	case 250000: samples = 2; printf("clk=0\r\n"); adc_set_clkdiv(0); break;
 	case 100000: samples = 5; printf("clk=0\r\n"); adc_set_clkdiv(0); break;
-	case  10000: 
-	case   1000: 
-	case    100: 
-	case     10: samples = 5; printf("clk=%d\r\n", (5*9600000/5)/timebase - 1); adc_set_clkdiv((5*9600000/5)/timebase - 1); break;
-	default:	 samples = 4; printf("clk=%d\r\n", (5*9600000/4)/timebase - 1); adc_set_clkdiv((5*9600000/4)/timebase - 1); break;
+	case  50000: samples = 10; printf("clk=0\r\n"); adc_set_clkdiv(0); break;
+//	case  10000: 
+//	case   1000: 
+//	case    100: 
+//	case     10: samples = 5; printf("clk=%d\r\n", (5*9600000/5)/timebase - 1); adc_set_clkdiv((5*9600000/5)/timebase - 1); break;
+	default:	 samples = 10; printf("clk=%d\r\n", (5*9600000/10)/timebase - 1); adc_set_clkdiv((5*9600000/10)/timebase - 1); break;
 	}
 	zoom = 1;
 	//adc_set_clkdiv(0);
@@ -539,21 +540,20 @@ scope_commands(struct opt_args *args, struct command_result *result)
 					break;
 				switch (timebase) {
 				case 250000: timebase = 500000; z = 1; break;	// 1 sample
-				case 100000: timebase = 250000; z = 1; break;	// 2 samples
-				case  50000: timebase = 100000; z = 0; break;	// 5 samples
+				case 100000: timebase = 250000; z = 0; break;	// 2 samples
+				case  50000: timebase = 100000; z = 1; break;	// 5 samples
 				case  25000: timebase = 50000; z = 1; break;	
-				case  10000: timebase = 25000; z = 1; break;
-				case   5000: timebase = 10000; z = 0; break;
+				case  10000: timebase = 25000; z = 0; break;
+				case   5000: timebase = 10000; z = 1; break;
 				case   2500: timebase = 5000; z = 1; break;
-				case   1000: timebase = 2500; z = 1; break;
-				case    500: timebase = 1000; z = 0; break;
+				case   1000: timebase = 2500; z = 0; break;
+				case    500: timebase = 1000; z = 1; break;
 				case    250: timebase = 500; z = 1; break;
-				case    100: timebase = 250; z = 1; break;
-				case     50: timebase = 100; z = 0; break;
+				case    100: timebase = 250; z = 0; break;
+				case     50: timebase = 100; z = 1; break;
 				case     25: timebase = 50; z = 1; break;
-				case     10: timebase = 25; z = 1; break;
+				case     10: timebase = 25; z = 0; break;
 				}
-printf("+ %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				if (z) {
 					if (samples != 1) {
 						samples /= 2;
@@ -569,6 +569,7 @@ printf("+ %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 						zoom /= 2;
 					}
 				}
+printf("+ %dz=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				display = 1;
 				break;
 			case '_':
@@ -591,7 +592,6 @@ printf("+ %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				case     50: timebase = 25; z = 1; break;
 				case     25: timebase = 10; z = 0; break;
 				}
-printf("- %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				if (z) {
 					if (zoom == 1) {
 						samples *= 2;
@@ -607,6 +607,7 @@ printf("- %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 						zoom /= 5;
 					}
 				}
+printf("- %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				display = 1;
 				break;
 			case 'v':
