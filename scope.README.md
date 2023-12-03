@@ -82,3 +82,21 @@ trigger on rising edges then <enter> to leave trigger mode
 * start a clock on pin 2 with (G 2 <enter> 1ms <enter> 33% <enter>)
 * enter x mode (x <enter>) you should see a bunch of square waves, try + and - to change the scale, and the left and right arrows to move around. Freeze a trace by typing 'o'.
 * enter y mode and change the voltage scale with + and - (and use the up down arrows to move the display)
+
+## Limitations na dbugs
+
+We're very much limited by the hardware:
+
+* we can't make more than 500k samples/sec
+* 12 bits 
+* tiny display
+* no way to make a dual scope (we might be able to have a digital trigger in the future)
+
+There are bugs
+
+* at the moment integration with the rest of the BP software is poor - in particular the analog subsystem
+gets locked out when the scope is grabbing samples
+* we're losing samples some times (I think) might be someone else with a hefty ISR
+* the scope does trigger processing from an ISR (might have to always do that)
+* periodically on long slow traces someone else seems to come in and grab the analog hardware
+
