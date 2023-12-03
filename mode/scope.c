@@ -1,3 +1,7 @@
+//
+//	(C) iPaul Campbell, Moonbase Otago 2023
+//	All Rights Reserved
+//
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
