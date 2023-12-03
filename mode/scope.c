@@ -56,6 +56,7 @@ static uint32_t h_res = 100;	// 100uS
 static uint8_t scope_pin = 0;
 static uint8_t display = 0;
 static uint8_t triggered = 0;
+static uint8_t scope_stopped = 1;
 uint8_t scope_running = 0;
 static uint8_t scope_stop_waiting = 0;
 static unsigned char fb[VS*HS];
@@ -183,8 +184,10 @@ uint32_t scope_periodic(void)
 			down = 0;
 			//printf("up\r\n");
 			if (!scope_running) {
+				scope_stopped = 0;
 				scope_start(scope_pin);
 			} else {
+				scope_stopped = 1;
 				scope_shutdown(1);
 			}
 		}
@@ -334,24 +337,13 @@ scope_stop(void)
 static void
 scope_shutdown(int now)
 {
-printf("scope_shutdown %d\r\n", scope_running);
 	if (!scope_running) 
 		return;
-//dma_channel_wait_for_finish_blocking(dma_chan);
-//printf("blocking done\r\n");
-//	for (int i = 0; i < 10000; i++) {
-//		if (data_ready) break;
-//		busy_wait_ms(1);
-//	}
 	stop_capture = (now?1:BUFFERS-5);
-	printf("stopping %d\r\n", data_ready);
 	for (int i = 0; i < 10000; i++) {
 		if (!stop_capture) break;
 		busy_wait_ms(1);
 	}
-	printf("stopped %d %d\r\n", stop_capture, int_count);
-//for (int i = 0; i < 40; i++) printf("%04x ", buffer[i]);printf("\r\n");
-
 	scope_stop();
 }
 
@@ -360,7 +352,6 @@ scope_start(int pin)
 {
 	if (scope_running)
 		return;
-printf("scope_start %d\r\n", scope_pin);
 	triggered = 0;
 	sample_first = 0;
 	sample_last = 0;
@@ -384,23 +375,18 @@ printf("scope_start %d\r\n", scope_pin);
     );
 	zoom = 1;
 	switch (timebase) {
-	case 5000000: samples = 1; zoom = 10; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-	case 2500000: samples = 1; zoom = 5; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-	case 1000000: samples = 1; zoom = 2; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-	case 500000: samples = 1; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;	
-	case 250000: samples = 2; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-	case 100000: samples = 5; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-	case  50000: samples = 10; printf("clk=0\r\n"); adc_set_clkdiv(0); base_timebase=500000; break;
-//	case  10000: 
-//	case   1000: 
-//	case    100: 
-//	case     10: samples = 5; printf("clk=%d\r\n", (5*9600000/5)/timebase - 1); adc_set_clkdiv((5*9600000/5)/timebase - 1); break;
-	default:	 samples = 10; printf("clk=%d\r\n", (5*9600000/10)/timebase - 1); adc_set_clkdiv((5*9600000/10)/timebase - 1); base_timebase = timebase; break;
+	case 5000000: samples = 1; zoom = 10; adc_set_clkdiv(0); base_timebase=500000; break;
+	case 2500000: samples = 1; zoom = 5; adc_set_clkdiv(0); base_timebase=500000; break;
+	case 1000000: samples = 1; zoom = 2; adc_set_clkdiv(0); base_timebase=500000; break;
+	case 500000: samples = 1; adc_set_clkdiv(0); base_timebase=500000; break;	
+	case 250000: samples = 2; adc_set_clkdiv(0); base_timebase=500000; break;
+	case 100000: samples = 5; adc_set_clkdiv(0); base_timebase=500000; break;
+	case  50000: samples = 10; adc_set_clkdiv(0); base_timebase=500000; break;
+	default:	 samples = 10; adc_set_clkdiv((5*9600000/10)/timebase - 1); base_timebase = timebase; break;
 	}
 	trigger_offset = convert_trigger_position(trigger_position);
 	trigger_skip = trigger_offset/CAPTURE_DEPTH + 2;	
 	
-	//adc_set_clkdiv(0);
 	dma_chan = dma_claim_unused_channel(true);
 	dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 	channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
@@ -425,8 +411,6 @@ printf("scope_start %d\r\n", scope_pin);
 	scope_running = 1;
 	busy_wait_ms(1);
 	adc_run(true);
-
-printf("scope_start done\r\n");
 }
 
 static uint8_t interactive;
@@ -480,7 +464,6 @@ trigger_up(void)
 	if (d >= V5)
 		d = V5-1;
 	trigger_level = d;
-printf("trigger_level = 0x%x\r\n", trigger_level);
 	display = 1;
 }
 
@@ -491,7 +474,6 @@ trigger_down(void)
 	if (d < 0)
 		d = 0;
 	trigger_level = d;
-printf("trigger_level = 0x%x\r\n", trigger_level);
 	display = 1;
 }
 
@@ -501,7 +483,6 @@ convert_trigger_position(int pos)
 	int s = 10000000/base_timebase; // samples/10uS
 	//int v = pos*zoom/(samples*s);
 	int v = pos/s;
-printf("cvt(pos=%d) tb=%d s=%d samp=%d z=%d -> %d\r\n", pos, base_timebase, s, samples, zoom, v);
 	if (v < 0)
 		return 0;
 	if (v >=  (CAPTURE_DEPTH*(BUFFERS-1)))
@@ -520,7 +501,6 @@ trigger_left(void)
 	} else {
 		trigger_offset = convert_trigger_position(trigger_position);
 	}
-printf("s=%d pos=%d off=%d\r\n", s, trigger_position, trigger_offset);
 	display = 1;
 }
 
@@ -530,7 +510,6 @@ trigger_right(void)
 	int s = 10000000/base_timebase; // samples/10uS
 	trigger_position += 10*s*samples/zoom;
 	trigger_offset = convert_trigger_position(trigger_position);
-printf("s=%d pos=%d off=%d\r\n", s, trigger_position, trigger_offset);
 	display = 1;
 }
 
@@ -608,7 +587,6 @@ uint32_t
 scope_commands(struct opt_args *args, struct command_result *result)
 {
 	char c;
-	//printf("SCOPE: %s\r\n", args[0].c);
 	
 //
 //	commands:
@@ -650,11 +628,12 @@ do_t:
 			switch (c) {
 			case 'x': printf("\r\n"); goto do_x;
 			case 'y': printf("\r\n"); goto do_y;
-			case 's': scope_shutdown(1); break;
-			case 'r': scope_start(scope_pin); break;
-			case 'o': scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
-			case 'n': scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
-			case 'a': scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
+			case '.':
+			case 's': scope_stopped = 1; scope_shutdown(1); break;
+			case 'r': scope_stopped = 0; scope_start(scope_pin); break;
+			case 'o': scope_stopped = 0; scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
+			case 'n': scope_stopped = 0; scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
+			case 'a': scope_stopped = 0; scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
 			case 'T': scope_to_trigger();	break;
 			case 0x1b:
 				c = next_char();
@@ -703,11 +682,12 @@ do_x:
 			switch (c) {
 			case 't': printf("\r\n"); goto do_t;
 			case 'y': printf("\r\n"); goto do_y;
-			case 's': scope_shutdown(1); break;
-			case 'r': scope_start(scope_pin); break;
-			case 'o': scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
-			case 'n': scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
-			case 'a': scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
+			case '.':
+			case 's': scope_stopped = 1; scope_shutdown(1); break;
+			case 'r': scope_stopped = 0; scope_start(scope_pin); break;
+			case 'o': scope_stopped = 0; scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
+			case 'n': scope_stopped = 0; scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
+			case 'a': scope_stopped = 0; scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
 			case 'T': scope_to_trigger();	break;
 			case 0x1b:
 				c = next_char();
@@ -764,7 +744,6 @@ do_x:
 					xoffset *= 5;
 					xoffset /= 2;
 				}
-printf("+ %dz=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				trigger_offset = convert_trigger_position(trigger_position);
 				display = 1;
 				break;
@@ -811,7 +790,6 @@ printf("+ %dz=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 					xoffset *= 2;
 					xoffset /= 5;
 				}
-printf("- %d z=%d zoom=%d samples=%d\r\n", timebase, z, zoom, samples);
 				trigger_offset = convert_trigger_position(trigger_position);
 				display = 1;
 				break;
@@ -838,11 +816,12 @@ do_y:
 			switch (c) {
 			case 't': printf("\r\n"); goto do_t;
 			case 'x': printf("\r\n"); goto do_x;
-			case 's': scope_shutdown(1); break;
-			case 'r': scope_start(scope_pin); break;
-			case 'o': scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
-			case 'n': scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
-			case 'a': scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
+			case '.':
+			case 's': scope_stopped = 1; scope_shutdown(1); break;
+			case 'r': scope_stopped = 0; scope_start(scope_pin); break;
+			case 'o': scope_stopped = 0; scope_mode = SMODE_ONCE; scope_start(scope_pin); break;
+			case 'n': scope_stopped = 0; scope_mode = SMODE_NORMAL; scope_start(scope_pin); break;
+			case 'a': scope_stopped = 0; scope_mode = SMODE_AUTO; scope_start(scope_pin); break;
 			case 'T': scope_to_trigger();	break;
 			case 0x1b:
 				c = next_char();
@@ -937,12 +916,14 @@ do_y:
 				return 0;
 			}
 		}
+		scope_stopped = 0;
 		scope_start(scope_pin);
 		if (interactive)
 			goto do_x;
 	} else 
 	if (strcmp(args[0].c, "ss") == 0)  {
 		// stop the engine - button if started
+		scope_stopped = 1;
 		scope_shutdown(1);
 		if (interactive)
 			goto do_x;
@@ -1043,16 +1024,12 @@ draw_trace(CLR c)
 	int x;
 	int y1;
 	int y2;
-int db=1;
-//	bool swap;
 	// dy is the number of 10 mv per 
 	// yoffset is the offest from 0 in dy units
 	int df = yoffset*(VS/5);
-printf("samples=%d zoom=%d sample_first=%d sample_last=%d\r\n", samples, zoom, sample_first, sample_last);
 	uint32_t offset = sample_first+xoffset*50*samples/zoom;
 	if (offset >= (BUFFERS*CAPTURE_DEPTH))
 		offset -= BUFFERS*CAPTURE_DEPTH;
-printf("offset=%d\r\n", offset);
 	b += offset;
 	int xlast = HS;
 	if (sample_first <= sample_last) {
@@ -1067,7 +1044,6 @@ printf("offset=%d\r\n", offset);
 			uint32_t y = *b++;
 		
 			int d = (y*VS*100/V5/dy)-df;
-//if (x<2) printf("y=%d dy=%d yoffset=%d df=%d d=%d\r\n", (int)y, (int)dy, (int)yoffset, df, d);
 			if (d < 0) {
 				d = -1;
 			} else {
@@ -1090,7 +1066,6 @@ printf("offset=%d\r\n", offset);
 			}
 			offset++;
 			if (offset >= (BUFFERS*CAPTURE_DEPTH)) {
-//printf("wrap\r\n");
 				offset = 0;
 				b = &buffer[0];
 			}
@@ -1099,7 +1074,6 @@ printf("offset=%d\r\n", offset);
 	}
 xdone:
 	xlast = x;
-printf("xlast = %d offset=%d\r\n", xlast, offset);
 	y1 = v1[0];
 	y2 = v2[0];
 	if (v1[zoom] > y2) {
@@ -1141,7 +1115,6 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 			}
 		}
 	}
-//int rep=0;
 	for (x = zoom; x < (xlast-zoom); x += zoom) {
 		y1 = v1[x];
 		y2 = v2[x];
@@ -1174,10 +1147,6 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 
 		if (y1 >= (2*VS)) {
 			if (y2 >= (2*VS)) {
-//printf("c1=%d %d %d %d\r\n", (int)c, x, y1, y2);
-//printf("%d %d\r\n", v1[x-zoom], v2[x-zoom]);
-//printf("%d %d\r\n", v1[x], v2[x]);
-//printf("%d %d\r\n", v1[x+zoom], v2[x+zoom]);
 				continue;
 			}
 			y1 = 2*(VS-1);
@@ -1188,10 +1157,6 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 
 		if (y1 < 0) {
 			if (y2 < 0) {
-//printf("c2=%d %d %d %d\r\n", (int)c, x, y1, y2);
-//printf("%d %d\r\n", v1[x-zoom], v2[x-zoom]);
-//printf("%d %d\r\n", v1[x], v2[x]);
-//printf("%d %d\r\n", v1[x+zoom], v2[x+zoom]);
 				continue;
 			}
 			y1 = 0;
@@ -1199,18 +1164,6 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 		if (y2 < 0) {
 			y2 = 0;
 		} 
-//swap = (v1[x+zoom]<<1) < y1 || (v1[x-zoom]<<1) > y2; // need to do something here for spiky data
-//int f=0;
-//if (zoom != 1) {
-//int dd = y2-y1;
-//if (dd < 0) dd = -dd;
-//if (dd >50) {f=1;
-//printf("c=%d %d %d %d\r\n", (int)c, x, y1, y2);
-//printf("%d %d\r\n", v1[x-zoom], v2[x-zoom]);
-//printf("%d %d\r\n", v1[x], v2[x]);
-//printf("%d %d\r\n", v1[x+zoom], v2[x+zoom]);
-//}
-//}
 		if (zoom == 1) {
 			for (int y = y1&~1; y <= y2; y+=2)
 				p[(HS/2)*y+x] = c;
@@ -1221,15 +1174,12 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 		    if (v1a < v1v && v1b < v1v) {
 				y1 = (v1a+v1v)>>1;
 				y2 = (v1b+v1v)>>1;
-//if (f)printf("m3 c=%d %d %d %d\r\n", (int)c, x, y1, y2);
-//if (f)printf("m3 c=%d %d %d %d - %d %d %d\r\n", (int)c, x, y1, y2, v1a, v1v, v1b);
 				int yf = y1&~1;
 				int z2 = zoom/2;
 				int z4 = zoom/4;
 				int zr2 = zoom-z2;
 				for (int xx = 0; xx < z2; xx++) {
 					int yl = (y1+((xx+1)*(v1v-y1)+z4)/z2)&~1;
-//if (f) printf("xx=%d yf=%d yl=%d\r\n",  xx, yf, yl);
 					for (int y = yf; y <= yl; y+=2) {
 						p[(HS/2)*y+x+xx] = c;
 					}
@@ -1238,25 +1188,20 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 				yf = v1v&~1;
 				for (int xx=0;xx < zr2; xx++) {
 					int yl = (v1v-((xx+1)*(v1v-y2)-z4)/zr2)&~1;
-//if (f) printf("xx=%d yf=%d yl=%d\r\n",  xx, yf, yl);
 					for (int y = yf; y >= yl; y-=2)
 						p[(HS/2)*y+x+z2+xx] = c;
 					yf = yl;
 				}
-//db=0;
 			} else
 		    if (v1a > v1v && v1b > v1v) {
 				y1 = (v1a+v1v)>>1;
 				y2 = (v1b+v1v)>>1;
-//if (f)printf("m4 c=%d %d %d %d\r\n", (int)c, x, y1, y2);
-//if (f)printf("m4 c=%d %d %d %d - %d %d %d\r\n", (int)c, x, y1, y2, v1a, v1v, v1b);
 				int yf = y1&~1;
 				int z2 = zoom/2;
 				int z4 = zoom/4;
 				int zr2 = zoom-z2;
 				for (int xx = 0; xx < z2; xx++) {
 					int yl = (y1-((xx+1)*(y1-v1v)-z4)/z2)&~1;
-//if (f) printf("xx=%d yf=%d yl=%d\r\n",  xx, yf, yl);
 					for (int y = yf; y >= yl; y-=2)
 						p[(HS/2)*y+x+xx] = c;
 					yf = yl;
@@ -1264,15 +1209,12 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 				yf = v1v&~1;
 				for (int xx = 0;xx < zr2; xx++) {
 					int yl = (v1v+((xx+1)*(y2-v1v)+z4)/zr2)&~1;
-//if (f) printf("xx=%d yf=%d yl=%d\r\n",  xx, yf, yl);
 					for (int y = yf; y <= yl; y+=2)
 						p[(HS/2)*y+x+z2+xx] = c;
 					yf = yl;
 				}
-//db=0;
 			} else
 		    if (v1b < v1v || v1a > v1v){
-//if (f)printf("m2 c=%d %d %d %d - %d %d %d\r\n", (int)c, x, y1, y2, v1a, v1v, v1b);
 				int yf = y2&~1;
 				for (int xx = 0; xx < zoom; xx++) {
 					int yl = (y2-(xx+1)*(y2-y1)/zoom)&~1;
@@ -1282,7 +1224,6 @@ printf("xlast = %d offset=%d\r\n", xlast, offset);
 				}
 			} else {
 				int yf = y1&~1;
-//if (f)printf("m1 c=%d %d %d %d - %d %d %d yf=%d\r\n", (int)c, x, y1, y2, v1a, v1v, v1b, yf);
 				for (int xx = 0; xx < zoom; xx++) {
 					int yl = (y1+(xx+1)*(y2-y1)/zoom)&~1;
 					for (int y = yf; y <= yl; y+=2)
@@ -1374,7 +1315,6 @@ draw_triggers(int minimal)
 	}
 
 	int toffset = trigger_offset*zoom/samples-(xoffset*50);
-printf("toffset=%d to=%d z=%d sam=%d xo=%d\r\n", toffset, trigger_offset,zoom, samples, xoffset);
 	if (minimal) {
 		if (toffset >= 0 && toffset < HS) 
 			draw_text(toffset < 6 ? 6 : toffset > (HS-6) ? HS-6 : toffset-6, VS-5, &hunter_12ptFontInfo, R, "T");
@@ -1422,7 +1362,6 @@ printf("toffset=%d to=%d z=%d sam=%d xo=%d\r\n", toffset, trigger_offset,zoom, s
 		}
 		*cp++ = 'V';
 		*cp++ = ' ';
-printf("trigger_position = %d\r\n", trigger_position);
 		int t = trigger_position/10;
 		if (t < 1000) {
 			cp += xnum(cp, t, 1);
@@ -1626,7 +1565,7 @@ scope_lcd_update(uint32_t flags)
 	//spi_set_baudrate(BP_SPI_PORT, 62500*1000);
 	scope_write();
 	spi_set_baudrate(BP_SPI_PORT, 32000*1000);
-	if (!scope_running && (scope_mode == SMODE_AUTO || scope_mode == SMODE_NORMAL)) {
+	if (!scope_running && !scope_stopped && (scope_mode == SMODE_AUTO || scope_mode == SMODE_NORMAL)) {
 		auto_wakeup_triggered = 0;
 		scope_start(scope_pin);
 		if (scope_mode == SMODE_AUTO)
