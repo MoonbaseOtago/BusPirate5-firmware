@@ -1558,7 +1558,7 @@ scope_lcd_update(uint32_t flags)
 			scope_shutdown(1);
 		}
 	}
-	if (!display || scope_running)
+	if (!display)
 		return;
 	display = 0;
 	draw_scope();
