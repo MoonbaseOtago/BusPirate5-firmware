@@ -63,7 +63,7 @@ static uint8_t triggered = 0;
 static uint8_t scope_stopped = 1;
 uint8_t scope_running = 0;
 static uint8_t scope_stop_waiting = 0;
-static unsigned char fb[VS*HS];
+static unsigned char fb[VS*HS/2];
 typedef enum { SMODE_ONCE, SMODE_NORMAL, SMODE_AUTO } SCOPE_MODE;
 SCOPE_MODE scope_mode=SMODE_ONCE;
 typedef enum { TRIGGER_POS, TRIGGER_NEG, TRIGGER_NONE, TRIGGER_BOTH } TRIGGER_TYPE;
@@ -938,40 +938,68 @@ do_y:
 static void
 scope_fb_init() 
 {
-	memset(fb, BL, sizeof(fb));
+	memset(fb, (BL<<4)|BL, sizeof(fb));
 }
 
 
 static void
 draw_h_line(int x1, int x2, int y1, CLR c)
 {
-	unsigned char *p = &fb[y1*HS+x1];
-	for (int i = x1; i <= x2; i++)
-		*p++ = c;
+	unsigned char *p = &fb[y1*(HS/2)+(x1>>1)];
+	if (x1&1) {
+		*p = (*p&~0xf0)|(c<<4);
+		x1++;
+		p++;
+	}
+	int C = (c<<4)|c;
+	for (int i = x1; i < x2; i+=2)
+		*p++ = C;
+	if (!(x2&1)) {
+		*p = (*p&~0xf)|c;
+	}
 }
 static void
 draw_v_line(int x1, int y1, int y2, CLR c)
 {
-	unsigned char *p = &fb[y1*HS+x1];
-	for (int i = y1; i <= y2; i++) {
-		*p = c;
-		p += HS;
+	unsigned char *p = &fb[y1*HS/2+(x1>>1)];
+	if (x1&1) {
+		for (int i = y1; i <= y2; i++) {
+			*p = (*p&~0xf0)|(c<<4);
+			p += HS/2;
+		}
+	} else {
+		for (int i = y1; i <= y2; i++) {
+			*p = (*p&~0xf)|c;
+			p += HS/2;
+		}
 	}
 }
 
 static void
 draw_d_line(int x1, int y1, int down, CLR c)
 {
-	unsigned char *p = &fb[y1*HS+x1];
+	unsigned char *p = &fb[y1*HS/2+(x1>>1)];
 	if (down < 0) {	
 		for (int i = down; i < 0; i++) {
-			*p = c;
-			p -= HS-1;
+			if (x1&1) {
+				*p = (*p&~0xf0)|((int)c<<4);
+				p -= HS/2-1;
+			} else {
+				*p = (*p&~0xf)|((int)c);
+				p -= HS/2;
+			}
+			x1++;
 		}
 	} else {
 		for (int i = 0; i < down; i++) {
-			*p = c;
-			p += HS+1;
+			if (x1&1) {
+				*p = (*p&~0xf0)|((int)c<<4);
+				p += HS/2+1;
+			} else {
+				*p = (*p&~0xf)|((int)c);
+				p += HS/2;
+			}
+			x1++;
 		}
 	}
 }
@@ -991,8 +1019,8 @@ draw_grid(CLR c)
 static void 
 draw_text(int x, int y, const FONT_INFO *font, CLR c, char *cp) // stolen from lcd_write_string
 {
-	unsigned char *b = &fb[x];
-	int yHS = HS*y;
+	unsigned char *b = &fb[x>>1];
+	int yHS = HS/2*y;
 	while (*cp) {
 		uint8_t adjusted_c = (*cp)-(*font).start_char;
 		for (uint16_t col=0; col < (*font).lookup[adjusted_c].width; col++) {
@@ -1004,15 +1032,22 @@ draw_text(int x, int y, const FONT_INFO *font, CLR c, char *cp) // stolen from l
 				uint8_t bitmap_char = (*font).bitmaps[offset+(col*(*font).height_bytes)+page];
 				for (uint8_t i=0; i<8; i++) {
 					if (off >= 0 && bitmap_char&(0x80>>i)) {
-						b[off] = c;
+						unsigned char *p = &b[off];
+						if (x&1) {
+							*p = (*p&~0xf0)|(c<<4);
+						} else {
+							*p = (*p&~0xf)|(c);
+						}
 					} 
-					off -= HS;
+					off -= HS/2;
 					row++;
 					if(row==rows)
 						break;
 				}
-			}
-			b++;
+			}	
+			if (x&1)
+				b++;
+			x++;
 		}
 		cp++;
 	}
@@ -1098,14 +1133,18 @@ xdone:
 		}
 		if (zoom == 1) {
 			for (int y = y1; y <= y2; y++)
-				p[HS*y+0] = c;
+				p[(HS/2)*y+0] = (p[(HS/2)*y+0]&~0xf)|c;
 		} else {
 			if (y1 > v1[zoom]) {
 				int yf = y2;
 				for (x = 0; x < zoom; x++) {
 					int yl = y2-(x+1)*(y2-y1)/zoom;
 					for (int y = yf; y >= yl; y--)
-						p[HS*y+x] = c;
+					if (x&1) {
+						p[(HS/2)*y+(x>>1)] = (p[(HS/2)*y+(x>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/2)*y+(x>>1)] = (p[(HS/2)*y+(x>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			} else {
@@ -1113,7 +1152,11 @@ xdone:
 				for (x = 0; x < zoom; x++) {
 					int yl = y1+(x+1)*(y2-y1)/zoom;
 					for (int y = yf; y <= yl; y++)
-						p[HS*y+x] = c;
+					if (x&1) {
+						p[(HS/2)*y+(x>>1)] = (p[(HS/2)*y+(x>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/2)*y+(x>>1)] = (p[(HS/2)*y+(x>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			}
@@ -1170,7 +1213,11 @@ xdone:
 		} 
 		if (zoom == 1) {
 			for (int y = y1&~1; y <= y2; y+=2)
-				p[(HS/2)*y+x] = c;
+			if (x&1) {
+				p[(HS/4)*y+(x>>1)] = (p[(HS/4)*y+(x>>1)]&~0xf0)|(c<<4);
+			} else {
+				p[(HS/4)*y+(x>>1)] = (p[(HS/4)*y+(x>>1)]&~0xf)|(c);
+			}
 		} else {
 			int v1a = (v1[x-zoom]<<1);
 			int v1v = (v1[x]<<1);
@@ -1184,8 +1231,11 @@ xdone:
 				int zr2 = zoom-z2;
 				for (int xx = 0; xx < z2; xx++) {
 					int yl = (y1+((xx+1)*(v1v-y1)+z4)/z2)&~1;
-					for (int y = yf; y <= yl; y+=2) {
-						p[(HS/2)*y+x+xx] = c;
+					for (int y = yf; y <= yl; y+=2) 
+					if ((x+xx)&1) {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf)|(c);
 					}
 					yf = yl;
 				}
@@ -1193,7 +1243,11 @@ xdone:
 				for (int xx=0;xx < zr2; xx++) {
 					int yl = (v1v-((xx+1)*(v1v-y2)-z4)/zr2)&~1;
 					for (int y = yf; y >= yl; y-=2)
-						p[(HS/2)*y+x+z2+xx] = c;
+					if ((x+z2+xx)&1) {
+						p[(HS/4)*y+((x+z2+xx)>>1)] = (p[(HS/4)*y+((x+z2+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+z2+xx)>>1)] = (p[(HS/4)*y+((x+z2+xx)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			} else
@@ -1207,14 +1261,18 @@ xdone:
 				for (int xx = 0; xx < z2; xx++) {
 					int yl = (y1-((xx+1)*(y1-v1v)-z4)/z2)&~1;
 					for (int y = yf; y >= yl; y-=2)
-						p[(HS/2)*y+x+xx] = c;
+						p[(HS/4)*y+x+xx] = c;
 					yf = yl;
 				}
 				yf = v1v&~1;
 				for (int xx = 0;xx < zr2; xx++) {
 					int yl = (v1v+((xx+1)*(y2-v1v)+z4)/zr2)&~1;
 					for (int y = yf; y <= yl; y+=2)
-						p[(HS/2)*y+x+z2+xx] = c;
+					if ((x+z2+xx)&1) {
+						p[(HS/4)*y+((x+z2+xx)>>1)] = (p[(HS/4)*y+((x+z2+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+z2+xx)>>1)] = (p[(HS/4)*y+((x+z2+xx)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			} else
@@ -1223,7 +1281,11 @@ xdone:
 				for (int xx = 0; xx < zoom; xx++) {
 					int yl = (y2-(xx+1)*(y2-y1)/zoom)&~1;
 					for (int y = yf; y >= yl; y-=2)
-						p[(HS/2)*y+x+xx] = c;
+					if ((x+xx)&1) {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			} else {
@@ -1231,7 +1293,11 @@ xdone:
 				for (int xx = 0; xx < zoom; xx++) {
 					int yl = (y1+(xx+1)*(y2-y1)/zoom)&~1;
 					for (int y = yf; y <= yl; y+=2)
-						p[(HS/2)*y+x+xx] = c;
+					if ((x+xx)&1) {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			}
@@ -1257,14 +1323,22 @@ xdone:
 		}
 		if (zoom == 1) {
 			for (int y = y1; y <= y2; y++)
-				p[HS*y+xlast-1] = c;
+			if ((xlast-1)&1) {
+				p[(HS/2)*y+((xlast-1)>>1)] = (p[(HS/2)*y+((xlast-1)>>1)]&~0xf0)|(c<<4);
+			} else {
+				p[(HS/2)*y+((xlast-1)>>1)] = (p[(HS/2)*y+((xlast-1)>>1)]&~0xf)|(c);
+			}
 		} else {
 			if (v1[xlast-zoom] < v1[xlast-2*zoom]) {
 				int yf = y2;
 				for (x = 0; x < zoom; x++) {
 					int yl = y2-(x+1)*(y2-y1)/zoom;
 					for (int y = yf; y >= yl; y--)
-						p[HS*y+x+xlast-zoom] = c;
+					if ((x+xlast-zoom)&1) {
+						p[(HS/2)*y+((x+xlast-zoom)>>1)] = (p[(HS/2)*y+((x+xlast-zoom)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/2)*y+((x+xlast-zoom)>>1)] = (p[(HS/2)*y+((x+xlast-zoom)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			} else {
@@ -1272,7 +1346,11 @@ xdone:
 				for (x = 0; x < zoom; x++) {
 					int yl = y1+(x+1)*(y2-y1)/zoom;
 					for (int y = yf; y <= yl; y++)
-						p[HS*y+x+xlast-zoom] = c;
+					if ((x+xlast-zoom)&1) {
+						p[(HS/2)*y+((x+xlast-zoom)>>1)] = (p[(HS/2)*y+((x+xlast-zoom)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/2)*y+((x+xlast-zoom)>>1)] = (p[(HS/2)*y+((x+xlast-zoom)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 			}
@@ -1531,8 +1609,10 @@ void scope_write()
     gpio_put(lcd_dp, 1);
     gpio_put(lcd_cs, 0);    
     
-    for(uint32_t b=0; b<(HS*VS); b+=1){
-        spi_write_blocking(BP_SPI_PORT, (unsigned char *)&clr[fb[b]], 2);
+    for(uint32_t b=0; b<(HS*VS/2); b+=1){
+		unsigned char x = fb[b];
+        spi_write_blocking(BP_SPI_PORT, (unsigned char *)&clr[x&0xf], 2);
+        spi_write_blocking(BP_SPI_PORT, (unsigned char *)&clr[(x>>4)&0xf], 2);
     }
     
     gpio_put(lcd_cs, 1);
