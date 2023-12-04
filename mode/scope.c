@@ -1261,7 +1261,11 @@ xdone:
 				for (int xx = 0; xx < z2; xx++) {
 					int yl = (y1-((xx+1)*(y1-v1v)-z4)/z2)&~1;
 					for (int y = yf; y >= yl; y-=2)
-						p[(HS/4)*y+x+xx] = c;
+					if ((x+xx)&1) {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf0)|(c<<4);
+					} else {
+						p[(HS/4)*y+((x+xx)>>1)] = (p[(HS/4)*y+((x+xx)>>1)]&~0xf)|(c);
+					}
 					yf = yl;
 				}
 				yf = v1v&~1;
